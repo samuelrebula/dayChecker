@@ -214,4 +214,36 @@ describe("progress service", () => {
     expect(response.headers.get("Retry-After")).toBe("12");
     expect(body.error).toBe("Too many requests. Please try again in a moment.");
   });
+
+  it("returns 503 on GET when persistence is unavailable", async () => {
+    mocks.getOrCreateProgress.mockRejectedValue(new Error("db offline"));
+
+    const response = await handleProgressGet(
+      new Request("http://localhost/api/progress"),
+    );
+    const body = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(503);
+    expect(body.error).toBe(
+      "Server is not ready (database unavailable). Start PostgreSQL and run prisma db push.",
+    );
+  });
+
+  it("returns 503 on POST when persistence is unavailable", async () => {
+    mocks.getOrCreateProgress.mockRejectedValue(new Error("db offline"));
+
+    const response = await handleProgressPost(
+      new Request("http://localhost/api/progress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "check" }),
+      }),
+    );
+    const body = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(503);
+    expect(body.error).toBe(
+      "Server is not ready (database unavailable). Start PostgreSQL and run prisma db push.",
+    );
+  });
 });

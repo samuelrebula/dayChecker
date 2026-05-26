@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Day Checker",
+  title: "Daily",
   description: "Daily check-in tracker with durable storage and no login.",
 };
 

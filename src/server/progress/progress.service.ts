@@ -25,6 +25,17 @@ function jsonResponse(body: ProgressResponseBody, status = 200) {
   return NextResponse.json(body, { status });
 }
 
+function attachCookieIfCreated(
+  response: NextResponse,
+  params: { created: boolean; cookieValue: string },
+) {
+  if (params.created) {
+    attachAnonymousCookie(response, params.cookieValue);
+  }
+
+  return response;
+}
+
 async function applyRateLimit(
   request: Request,
   anonymousId: string,
@@ -41,131 +52,134 @@ async function applyRateLimit(
 }
 
 export async function handleProgressGet(request: Request) {
-  const { anonymousId, cookieValue, created } =
-    await getOrCreateAnonymousIdentity();
-  const rateLimit = await applyRateLimit(request, anonymousId, "load-progress");
+  const identity = await getOrCreateAnonymousIdentity();
 
-  if (!rateLimit.allowed) {
-    const response = jsonResponse(
-      {
-        error: "Too many requests. Please try again in a moment.",
-      },
-      429,
+  try {
+    const rateLimit = await applyRateLimit(
+      request,
+      identity.anonymousId,
+      "load-progress",
     );
 
-    attachAnonymousCookie(response, cookieValue);
-    response.headers.set("Retry-After", String(rateLimit.retryAfterSeconds));
-    return response;
+    if (!rateLimit.allowed) {
+      const response = jsonResponse(
+        {
+          error: "Too many requests. Please try again in a moment.",
+        },
+        429,
+      );
+
+      attachAnonymousCookie(response, identity.cookieValue);
+      response.headers.set("Retry-After", String(rateLimit.retryAfterSeconds));
+      return response;
+    }
+
+    const progress = await getOrCreateProgress(identity.anonymousId);
+    const response = jsonResponse({
+      progress: buildProgressPayload(progress, getTodayKey()),
+      message: "Your progress has been loaded.",
+    });
+
+    return attachCookieIfCreated(response, identity);
+  } catch {
+    const response = jsonResponse(
+      {
+        error:
+          "Server is not ready (database unavailable). Start PostgreSQL and run prisma db push.",
+      },
+      503,
+    );
+
+    return attachCookieIfCreated(response, identity);
   }
-
-  const progress = await getOrCreateProgress(anonymousId);
-  const response = jsonResponse({
-    progress: buildProgressPayload(progress, getTodayKey()),
-    message: "Your progress has been loaded.",
-  });
-
-  if (created) {
-    attachAnonymousCookie(response, cookieValue);
-  }
-
-  return response;
 }
 
 export async function handleProgressPost(request: Request) {
-  const { anonymousId, cookieValue, created } =
-    await getOrCreateAnonymousIdentity();
-  const body = await request.json().catch(() => null);
-  const parsed = progressActionSchema.safeParse(body);
+  const identity = await getOrCreateAnonymousIdentity();
 
-  if (!parsed.success) {
-    const response = jsonResponse({ error: "Invalid request." }, 400);
+  try {
+    const body = await request.json().catch(() => null);
+    const parsed = progressActionSchema.safeParse(body);
 
-    if (created) {
-      attachAnonymousCookie(response, cookieValue);
+    if (!parsed.success) {
+      const response = jsonResponse({ error: "Invalid request." }, 400);
+      return attachCookieIfCreated(response, identity);
     }
 
-    return response;
-  }
-
-  const rateLimit = await applyRateLimit(
-    request,
-    anonymousId,
-    parsed.data.action,
-  );
-
-  if (!rateLimit.allowed) {
-    const response = jsonResponse(
-      {
-        error: "Too many requests. Please try again in a moment.",
-      },
-      429,
+    const rateLimit = await applyRateLimit(
+      request,
+      identity.anonymousId,
+      parsed.data.action,
     );
 
-    attachAnonymousCookie(response, cookieValue);
-    response.headers.set("Retry-After", String(rateLimit.retryAfterSeconds));
-    return response;
-  }
-
-  const progress = await getOrCreateProgress(anonymousId);
-
-  if (parsed.data.action === "check") {
-    if (progress.completedAt) {
+    if (!rateLimit.allowed) {
       const response = jsonResponse(
         {
-          error: "That target has already been completed.",
-          progress: buildProgressPayload(progress, getTodayKey()),
+          error: "Too many requests. Please try again in a moment.",
         },
-        409,
+        429,
       );
 
-      if (created) {
-        attachAnonymousCookie(response, cookieValue);
-      }
-
+      attachAnonymousCookie(response, identity.cookieValue);
+      response.headers.set("Retry-After", String(rateLimit.retryAfterSeconds));
       return response;
     }
 
-    if (progress.lastCheckedDateKey === getTodayKey()) {
-      const response = jsonResponse(
-        {
-          error: "You already checked in today.",
-          progress: buildProgressPayload(progress, getTodayKey()),
-        },
-        409,
-      );
+    const progress = await getOrCreateProgress(identity.anonymousId);
 
-      if (created) {
-        attachAnonymousCookie(response, cookieValue);
+    if (parsed.data.action === "check") {
+      if (progress.completedAt) {
+        const response = jsonResponse(
+          {
+            error: "That target has already been completed.",
+            progress: buildProgressPayload(progress, getTodayKey()),
+          },
+          409,
+        );
+
+        return attachCookieIfCreated(response, identity);
       }
 
-      return response;
+      if (progress.lastCheckedDateKey === getTodayKey()) {
+        const response = jsonResponse(
+          {
+            error: "You already checked in today.",
+            progress: buildProgressPayload(progress, getTodayKey()),
+          },
+          409,
+        );
+
+        return attachCookieIfCreated(response, identity);
+      }
+
+      const updated = await recordDailyCheck(identity.anonymousId, getTodayKey());
+      const response = jsonResponse({
+        progress: buildProgressPayload(updated, getTodayKey()),
+        message: updated.completedAt
+          ? "Target completed. Progress saved successfully."
+          : "Daily check recorded.",
+      });
+
+      return attachCookieIfCreated(response, identity);
     }
 
-    const updated = await recordDailyCheck(anonymousId, getTodayKey());
+    const updated = await updateTarget(identity.anonymousId, parsed.data.targetCount);
+
     const response = jsonResponse({
       progress: buildProgressPayload(updated, getTodayKey()),
-      message: updated.completedAt
-        ? "Target completed. Progress saved successfully."
-        : "Daily check recorded.",
+      message: "Target updated successfully.",
     });
 
-    if (created) {
-      attachAnonymousCookie(response, cookieValue);
-    }
+    return attachCookieIfCreated(response, identity);
+  } catch {
+    const response = jsonResponse(
+      {
+        error:
+          "Server is not ready (database unavailable). Start PostgreSQL and run prisma db push.",
+      },
+      503,
+    );
 
-    return response;
+    return attachCookieIfCreated(response, identity);
   }
-
-  const updated = await updateTarget(anonymousId, parsed.data.targetCount);
-
-  const response = jsonResponse({
-    progress: buildProgressPayload(updated, getTodayKey()),
-    message: "Target updated successfully.",
-  });
-
-  if (created) {
-    attachAnonymousCookie(response, cookieValue);
-  }
-
-  return response;
 }

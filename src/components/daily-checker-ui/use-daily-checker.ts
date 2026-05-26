@@ -12,8 +12,9 @@ type ProgressState = {
 };
 
 type ApiResponse = {
-  progress: ProgressState;
-  message: string;
+  progress?: ProgressState;
+  message?: string;
+  error?: string;
 };
 
 type DailyCheckerModel = {
@@ -55,9 +56,16 @@ export function useDailyChecker(): DailyCheckerModel {
         const data = (await response.json()) as ApiResponse;
 
         if (!cancelled) {
-          setProgress(data.progress);
-          setTargetInput(String(data.progress.targetCount));
-          setStatus(data.message);
+          if (!response.ok) {
+            setError(data.error ?? "Could not load your data right now.");
+            setStatus(data.error ?? "Could not load your data right now.");
+            return;
+          }
+
+          const nextProgress = data.progress ?? initialProgress;
+          setProgress(nextProgress);
+          setTargetInput(String(nextProgress.targetCount));
+          setStatus(data.message ?? "Your progress has been loaded.");
         }
       } catch {
         if (!cancelled) {
@@ -114,7 +122,12 @@ export function useDailyChecker(): DailyCheckerModel {
           return;
         }
 
-        syncProgress(data.progress, data.message);
+        if (data.progress) {
+          syncProgress(data.progress, data.message ?? "Saved.");
+          return;
+        }
+
+        setError("Could not save today’s check.");
       } catch {
         setError("Network error while saving the check.");
       }
@@ -153,7 +166,12 @@ export function useDailyChecker(): DailyCheckerModel {
           return;
         }
 
-        syncProgress(data.progress, data.message);
+        if (data.progress) {
+          syncProgress(data.progress, data.message ?? "Target updated.");
+          return;
+        }
+
+        setError("Could not update the target.");
       } catch {
         setError("Network error while updating the target.");
       }
