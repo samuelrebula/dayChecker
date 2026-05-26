@@ -1,0 +1,28 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DAYCHECK_DB_URL")
+}
+
+model Progress {
+  id                 String   @id @default(cuid())
+  anonymousId        String   @unique
+  targetCount        Int      @default(30)
+  currentCount       Int      @default(0)
+  lastCheckedDateKey String?
+  completedAt        DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model RequestThrottle {
+  id           String   @id @default(cuid())
+  key          String   @unique
+  hitCount     Int      @default(0)
+  windowEndsAt  DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
